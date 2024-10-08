@@ -530,6 +530,11 @@ export class Playground extends Construct {
         actions: [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "s3:*",
+          "glue:*",
         ],
         resources: [`*`],
       })
