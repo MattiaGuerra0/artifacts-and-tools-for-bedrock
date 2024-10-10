@@ -172,7 +172,8 @@ def handle_message(logger, connection_id, user_id, body):
                 intent_message = {
                     "role": "user",
                     "content": [{
-                        "text": f"What is the best way to visualize this data? <data>{query_results_str}</data>",
+                        # "text": f"Based on the user's input, determine whether a table or a chart would be the most appropriate visualization for this data. The user's request is: <input>{user_query}</input>. Here is the data: <data>{query_results_str}</data>.",
+                        "text": f"Based on the user's input, determine whether the request is to generate a table or a chart using the provided data. This is the user's request: <input>{user_query}</input>.",
                     }],
                 }
 
@@ -193,28 +194,56 @@ def handle_message(logger, connection_id, user_id, body):
 
                 # Valuta la risposta di Bedrock per decidere se creare un grafico o una tabella
                 if intent_response and query_results_str:
+                    logger.info(f"---------- intent_response: {"chart" in intent_response.lower()}")
                     if "chart" in intent_response.lower():
-                        converse_messages = [
+                        generative_messages = [
                             {
                                 "role": "user",
                                 "content": [{
-                                    "text": f"Create a chart based on this data and return it as a JSON structure compatible with Chart.js: <result>{query_results_str}</result>"
+                                    "text": (
+                                        # f"Create a chart based on this data and return it as a Chart.js JSON structure: <result>{query_results_str}</result>"
+                                        # f"Use the 'labels' property as the x-axis and the 'dataset.data' property as the y-axis"
+                                        f"Generate a Chart.js JSON structure using the following data: <data>{query_results_str}</data>. "
+                                        f"Use one field as the labels for the x-axis, and the other field as the data for the y-axis in the 'datasets' property. "
+                                        "Ensure the JSON structure follows Chart.js conventions, including the 'labels', 'datasets', 'backgroundColor', and 'borderColor' properties. "
+                                        "Do not use HTML or artifact tags, return only the JSON object. "
+                                        "Ignore the first object if it contains just the property names."
+                                    )
                                 }],
                             },
                         ]
                     elif "table" in intent_response.lower():
-                        converse_messages = [
+                        generative_messages = [
                             {
                                 "role": "user",
                                 "content": [{
-                                    "text": f"Create a table based on this data and return a JSON structure with this format: {{'title': string, 'elements': any[], 'totalElements': number}} and a representation in html of the table using the tags <x-artifact>: <result>{query_results_str}</result>"
+                                    "text": (
+                                        f"Create a table based on the following data and return a JSON structure in this format: "
+                                        f"{{'title': string, 'elements': any[], 'totalElements': number}}. "
+                                        f"Also, provide an HTML representation of the table using <x-artifact> tags. "
+                                        f"Here is the data: <result>{query_results_str}</result>. "
+                                        f"Ensure the JSON structure includes a valid title, an array of data as 'elements', and the correct 'totalElements' count."
+                                    )
                                 }],
                             },
                         ]
                     else:
                         sender.send_error("Unable to determine visualization type.")
                 
-                sender.send_loop(intent_response)
+                if generative_messages:
+                    # Invia il messaggio a Bedrock per comprendere generare la tabella o il grafico
+                    generative_response = converse_make_request_stream(
+                        sender,
+                        user_id,
+                        session_id,
+                        generative_messages,
+                        results,
+                        logger,
+                        {},  # tool_extra
+                        []   # files
+                    )
+
+                sender.send_loop(generative_response)
             else:
                 sender.send_error("Failed to execute query")
         else:
