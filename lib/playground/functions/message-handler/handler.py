@@ -173,7 +173,10 @@ def handle_message(logger, connection_id, user_id, body):
                     "role": "user",
                     "content": [{
                         # "text": f"Based on the user's input, determine whether a table or a chart would be the most appropriate visualization for this data. The user's request is: <input>{user_query}</input>. Here is the data: <data>{query_results_str}</data>.",
-                        "text": f"Based on the user's input, determine whether the request is to generate a table or a chart using the provided data. This is the user's request: <input>{user_query}</input>.",
+                        "text": (
+                            f"Based on the user's input, determine whether the request is to generate a table or a chart using the provided data. This is the user's request: <input>{user_query}</input>. "
+                            "Always answer in english"
+                        ),
                     }],
                 }
 
