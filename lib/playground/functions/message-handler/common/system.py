@@ -16,8 +16,6 @@ Creating the code and placing it within the appropriate artifact will fulfill th
 
 Artifacts are jsut clean and readable raw code without any additional formatting or markup languages like Markdown or XML. OUTPUT THE CODE DIRECTLY, without any surrounding tags or indicators.
 NEVER create an artifact and use a tool in the same answer.
-Put artifact in the x-artifact tag: <x-artifact type="..." name="...">...</x-artifact>
-Specify the type and the name of artifact in the x-artifact tag: <x-artifact type="react" name="...">...</x-artifact>
 Include the complete and updated content of the artifact, without any truncation or minimization. Don't use "// rest of the code remains the same...".
 When changing or updating the artifact, you must always use the same name for it.
 DON'T create artifacts of types other than: "html".

@@ -100,7 +100,7 @@ def execute_athena_query(query, database, output_bucket, logger):
         return None
 
 def handle_message(logger, connection_id, user_id, body):
-    logger.info(f"Received message for {user_id}")
+    logger.info(f"---------- Received message for {user_id}")
     logger.info(body)
     sender = MessageSender(connection_id)
 
@@ -114,38 +114,107 @@ def handle_message(logger, connection_id, user_id, body):
         if event_type == "HEARTBEAT":
             sender.send_heartbeat()
         elif event_type == "CONVERSE":
-            query = body.get("message")  # Ottieni la query dall'utente
-            database = "bm-db-prototype"  # Specifica il database Athena
-            output_bucket = "bloomfleet-ai-prototype-output"  # Specifica il bucket per i risultati
+            user_query = body.get("message")  # Query dell'utente
+            database = "bm-db-prototype"
+            output_bucket = "bloomfleet-ai-prototype-output"
+            table_name = "bm-db-prototype.input"  # Nome della tabella in Athena
 
-            logger.info(f"---------- Imposto results con execute_athena_query")
-            results = execute_athena_query(query, database, output_bucket, logger)
-            if results:
-                # Convertiamo i risultati in formato leggibile dall'assistente
-                query_results_str = json.dumps(results, indent=2)
-                
-                # Chiediamo all'assistente di elaborare/sintetizzare i risultati
-                converse_messages = [
-                    {
-                        "role": "user",
-                        "content": [{"text": f"Please summarize the following query results: <result>{query_results_str}</result>"}],
-                    },
-                ]
+            logger.info(f"---------- Generating SQL query")
+            # Invia la richiesta a Bedrock per generare la query SQL
+            sql_query_message = {
+                "role": "user",
+                "content": [{
+                    "text": (
+                        f"Generate an SQL query based on the following user request: '{user_query}'. "
+                        "For example, if the user requests 'show all sales', the response should be 'SELECT * FROM sales;'. "
+                        "Only provide the SQL query, no explanations."
+                        "The query should be formatted in a single line and compatible with Athena."
+                        f"Use the database '{database}' and the Athena table '{table_name}'."
+                    )
+                }],
+            }
 
-                # Passiamo i risultati al flusso conversazionale di Bedrock
-                finish = converse_make_request_stream(
+            # Creiamo i messaggi da passare a Bedrock
+            converse_messages = [sql_query_message]
+            logger.info(f"---------- converse_messages: {converse_messages}")
+
+            # Invia il messaggio a Bedrock
+            sql_query_response = converse_make_request_stream(
+                sender,
+                user_id,
+                session_id,
+                converse_messages,
+                {},  # Non abbiamo ancora risultati
+                logger,
+                {},  # tool_extra
+                []   # files
+            )
+
+            logger.info(f"---------- Generated SQL query: {sql_query_response}")
+            # Ottieni la risposta da Bedrock che contiene la query SQL
+            if sql_query_response:
+                sql_query = sql_query_response.replace('\n', '').replace('\\', '')
+                logger.info(f"---------- Clean SQL query: {sql_query}")
+
+                # Validate the SQL query
+                if not sql_query.lower().startswith(('select', 'insert', 'update', 'delete')):
+                    raise ValueError("Generated query is not a valid SQL command.")
+
+                # Esegui la query generata
+                results = execute_athena_query(sql_query, database, output_bucket, logger)
+                logger.info(f"---------- execute_athena_query results: {results}")
+
+                if results:
+                    query_results_str = json.dumps(results, indent=2)
+                    logger.info(f"---------- Athena query results: {query_results_str}")
+
+                # Chiedi a Bedrock di analizzare la richiesta e determinare l'intento
+                intent_message = {
+                    "role": "user",
+                    "content": [{
+                        "text": f"What is the best way to visualize this data? <data>{query_results_str}</data>",
+                    }],
+                }
+
+                # Creiamo i messaggi da passare a Bedrock
+                converse_messages = [intent_message]
+
+                # Invia il messaggio a Bedrock per comprendere l'intento
+                intent_response = converse_make_request_stream(
                     sender,
                     user_id,
                     session_id,
                     converse_messages,
                     results,
-                    {},  # tool_extra (se hai strumenti extra da passare)
-                    []   # files (se hai file associati alla conversazione)
+                    logger,
+                    {},  # tool_extra
+                    []   # files
                 )
-                
-                # Invia il loop per terminare la conversazione
-                sender.send_loop(finish)
 
+                # Valuta la risposta di Bedrock per decidere se creare un grafico o una tabella
+                if intent_response and query_results_str:
+                    if "chart" in intent_response.lower():
+                        converse_messages = [
+                            {
+                                "role": "user",
+                                "content": [{
+                                    "text": f"Create a chart based on this data and return it as a JSON structure compatible with Chart.js: <result>{query_results_str}</result>"
+                                }],
+                            },
+                        ]
+                    elif "table" in intent_response.lower():
+                        converse_messages = [
+                            {
+                                "role": "user",
+                                "content": [{
+                                    "text": f"Create a table based on this data and return a JSON structure with this format: {{'title': string, 'elements': any[], 'totalElements': number}} and a representation in html of the table using the tags <x-artifact>: <result>{query_results_str}</result>"
+                                }],
+                            },
+                        ]
+                    else:
+                        sender.send_error("Unable to determine visualization type.")
+                
+                sender.send_loop(intent_response)
             else:
                 sender.send_error("Failed to execute query")
         else:
@@ -162,51 +231,42 @@ def converse_make_request_stream(
     session_id,
     converse_messages,
     results,
+    logger,
     tool_extra,
     files,
 ):
+    logger.info(f"---------- converse_make_request_stream results: '{results}'")
     file_names = [os.path.basename(file["file_name"]) for file in files]
     system = system_messages(ARTIFACTS_ENABLED == "1", file_names)
-
-    additional_params = {}
-    if tool_config:
-        additional_params["toolConfig"] = {"tools": tool_config}
 
     # Effettuiamo una chiamata per generare una risposta dallo stream Bedrock
     streaming_response = bedrock_client.converse_stream(
         modelId=BEDROCK_MODEL,
         system=system,
-        messages=converse_messages,  # Qui passiamo i messaggi con i risultati Athena
-        inferenceConfig={"maxTokens": 4096, "temperature": 0.5},
-        **additional_params,
+        messages=converse_messages,
+        inferenceConfig={"maxTokens": 4096, "temperature": 0},
+        **{},
     )
+    logger.info(f"---------- streaming_response '{streaming_response}'")
 
     executor = ConverseToolExecutor(user_id, session_id, provider)
 
+    response_text = ""
     for chunk in streaming_response["stream"]:
+        # logger.info(f"---------- streaming_response chunk: '{chunk}'")
         # Elaboriamo lo stream e inviamo il testo all'utente
-        if text := executor.process_chunk(chunk):
+        text = executor.process_chunk(chunk)
+        # logger.info(f"---------- streaming_response text: '{text}'")
+        if text:
             sender.send_text(text)
-    sender.send_text(f"/n data: {results}")
+            response_text += text  # Accumula la risposta
+        else:
+            logger.warning("Chunk processed but no text returned.")
+    logger.info(f"---------- response_text '{response_text}'")
 
     # Recuperiamo i messaggi dell'assistente
     assistant_messages = executor.get_assistant_messages()
+    logger.info(f"---------- assistant_messages '{assistant_messages}'")
     converse_messages.extend(assistant_messages)
 
-    if executor.execution_requested():
-        tool_use_extra = sender.send_tool_running_messages(executor)
-        tool_extra.update(tool_use_extra)
-
-        # Eseguiamo gli strumenti integrati (se applicabile)
-        executor.execute(s3_client, file_names)
-        user_messages = executor.get_user_messages()
-        converse_messages.extend(user_messages)
-
-        tool_results_extra = sender.send_tool_finished_messages(executor)
-
-        for tool_use_id, extra in tool_results_extra.items():
-            tool_extra.get(tool_use_id, {}).update(extra)
-
-        return False
-
-    return True
+    return response_text.strip()  # Restituisci la risposta finale
